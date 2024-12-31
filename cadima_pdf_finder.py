@@ -4,6 +4,7 @@ import os
 from urllib.parse import quote
 from tqdm import tqdm
 import logging
+import fitz  # PyMuPDF
 
 # Configure logging
 logging.basicConfig(
@@ -177,12 +178,25 @@ def download_pdf(url, save_path):
             logging.error(f"Download error for URL {url}: {str(e)}")
         return False, f"Download error: {str(e)}"
 
+def pdf_contains_images(pdf_path):
+    try:
+        doc = fitz.open(pdf_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            if page.get_images(full=True):
+                return True
+        return False
+    except Exception as e:
+        logging.error(f"Error checking images in PDF {pdf_path}: {str(e)}")
+        return False
+
 def main():
     logging.info("Program started.")
     print("Loading reference file...")
-    df, references, pdf_links = read_references('reference_list50.xlsx')
+    df, references, pdf_links = read_references('reference_list.xlsx')
     os.makedirs('pdfs', exist_ok=True)
-    logging.info("Ensuring 'pdfs' directory exists")
+    os.makedirs('image_pdfs', exist_ok=True)
+    logging.info("Ensuring 'pdfs' and 'image_pdfs' directories exist")
     
     print(f"\nAnalysis:")
     print(f"Total references in file: {len(df)}")
@@ -212,8 +226,21 @@ def main():
             'Source': None,
             'Download_Status': 'Not attempted',
             'File_Path': None,
-            'Error_Message': None
+            'Error_Message': None,
+            'Contains_Images': False
         }
+        
+        filename = f"pdfs/{doi.replace('/', '_')}.pdf"
+        image_filename = f"image_pdfs/{doi.replace('/', '_')}.pdf"
+        
+        # Check if the PDF already exists
+        if os.path.exists(filename) or os.path.exists(image_filename):
+            logging.info(f"PDF for DOI {doi} already exists. Skipping download.")
+            result['Download_Status'] = 'Skipped'
+            result['File_Path'] = filename if os.path.exists(filename) else image_filename
+            result['Contains_Images'] = os.path.exists(image_filename)
+            results.append(result)
+            continue
         
         # Try different sources, starting with Unpaywall and PubMed
         pdf_url = None
@@ -239,13 +266,21 @@ def main():
             result['PDF_Found'] = True
         
         if pdf_url:
-            filename = f"pdfs/{doi.replace('/', '_')}.pdf"
             success, message = download_pdf(pdf_url, filename)
             result['Download_Status'] = 'Success' if success else 'Failed'
             result['File_Path'] = filename if success else None
             result['Error_Message'] = None if success else message
             if success:
                 logging.info(f"Successfully downloaded PDF for DOI {doi} to {filename}")
+                if pdf_contains_images(filename):
+                    try:
+                        os.rename(filename, image_filename)
+                        logging.info(f"Moved PDF with images to {image_filename}")
+                        result['Contains_Images'] = True
+                        result['File_Path'] = image_filename
+                    except FileExistsError:
+                        logging.warning(f"File already exists: {image_filename}")
+                        result['Error_Message'] = f"File already exists: {image_filename}"
             else:
                 logging.warning(f"Failed to download PDF for DOI {doi}: {message}")
         else:
